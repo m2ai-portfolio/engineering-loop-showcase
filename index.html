@@ -1,0 +1,1313 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tear It Down and Rebuild It — a Claude Code skill-rebuild case study</title>
+<meta name="description" content="What happens when you ask Claude Code to 'tear it down and rebuild it' instead of 'improve it': a full engineering loop with snapshots, A/B evals, assertion grading, and a 100% vs 74.2% benchmark.">
+<style>
+  :root {
+    --bg: #0b0e14;
+    --bg-soft: #0e1320;
+    --panel: #11161f;
+    --panel-2: #151b28;
+    --border: #1f2734;
+    --border-soft: #1a2130;
+    --text: #dfe5ee;
+    --muted: #8b96a8;
+    --faint: #5d6778;
+    --green: #43d17a;
+    --green-dim: rgba(67, 209, 122, 0.12);
+    --red: #f2655f;
+    --red-dim: rgba(242, 101, 95, 0.12);
+    --amber: #e8b339;
+    --blue: #6ea8fe;
+    --teal: #4fd6c4;
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection { background: rgba(79, 214, 196, 0.25); }
+
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 0 24px; }
+
+  a { color: var(--blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* ---------- top nav ---------- */
+  nav.top {
+    border-bottom: 1px solid var(--border-soft);
+    background: rgba(11, 14, 20, 0.92);
+    position: sticky; top: 0; z-index: 50;
+    backdrop-filter: blur(8px);
+  }
+  nav.top .wrap {
+    display: flex; align-items: center; gap: 22px;
+    height: 52px; font-size: 13px;
+  }
+  nav.top .brand {
+    font-family: var(--mono); color: var(--teal);
+    font-size: 13px; letter-spacing: 0.02em; margin-right: auto;
+    white-space: nowrap;
+  }
+  nav.top a.nl { color: var(--muted); white-space: nowrap; }
+  nav.top a.nl:hover { color: var(--text); text-decoration: none; }
+  @media (max-width: 720px) {
+    nav.top a.nl { display: none; }
+    nav.top a.nl.keep { display: inline; }
+  }
+
+  /* ---------- hero ---------- */
+  header.hero {
+    padding: 84px 0 64px;
+    background:
+      radial-gradient(1100px 420px at 50% -130px, rgba(79, 214, 196, 0.07), transparent 70%),
+      var(--bg);
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .eyebrow {
+    font-family: var(--mono); font-size: 12px; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--teal); margin-bottom: 22px;
+  }
+  h1.headline {
+    font-size: clamp(30px, 5.4vw, 54px);
+    line-height: 1.12; font-weight: 750; letter-spacing: -0.022em;
+    max-width: 880px;
+  }
+  h1.headline .ok { color: var(--green); }
+  h1.headline .bad { color: var(--red); }
+  h1.headline .dim { color: var(--muted); font-weight: 550; }
+  p.sub {
+    margin-top: 22px; font-size: 18px; color: var(--muted); max-width: 720px;
+  }
+  p.sub strong { color: var(--text); font-weight: 600; }
+
+  .stat-row {
+    margin-top: 44px;
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;
+  }
+  @media (max-width: 860px) { .stat-row { grid-template-columns: repeat(2, 1fr); } }
+  .stat {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 18px 18px 15px;
+  }
+  .stat .v { font-family: var(--mono); font-size: 26px; font-weight: 600; letter-spacing: -0.02em; }
+  .stat .v.green { color: var(--green); }
+  .stat .v.red { color: var(--red); }
+  .stat .v.teal { color: var(--teal); }
+  .stat .k { font-size: 12.5px; color: var(--muted); margin-top: 5px; }
+
+  /* ---------- sections ---------- */
+  section { padding: 76px 0; border-bottom: 1px solid var(--border-soft); }
+  .sec-eyebrow {
+    font-family: var(--mono); font-size: 12px; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--faint); margin-bottom: 10px;
+  }
+  h2 {
+    font-size: clamp(24px, 3.4vw, 34px); font-weight: 700;
+    letter-spacing: -0.018em; margin-bottom: 14px;
+  }
+  p.lede { color: var(--muted); max-width: 760px; margin-bottom: 8px; }
+  p.lede strong { color: var(--text); }
+  code.inl {
+    font-family: var(--mono); font-size: 0.86em;
+    background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 5px; padding: 1px 6px; white-space: nowrap;
+  }
+
+  /* ---------- the loop ---------- */
+  .loop-legend {
+    display: flex; gap: 18px; flex-wrap: wrap; margin: 26px 0 30px;
+    font-size: 13px; color: var(--muted);
+  }
+  .loop-legend .lg { display: inline-flex; align-items: center; gap: 8px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+  .dot.h { background: var(--amber); }
+  .dot.m { background: var(--blue); }
+
+  ol.loop { list-style: none; position: relative; max-width: 860px; }
+  ol.loop::before {
+    content: ""; position: absolute; left: 19px; top: 14px; bottom: 14px;
+    width: 2px; background: var(--border);
+  }
+  ol.loop li {
+    position: relative; padding: 0 0 26px 64px;
+  }
+  ol.loop li:last-child { padding-bottom: 0; }
+  .ln {
+    position: absolute; left: 0; top: 0;
+    width: 40px; height: 40px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--mono); font-size: 15px; font-weight: 600;
+    background: var(--panel); border: 2px solid var(--border); color: var(--muted);
+    z-index: 1;
+  }
+  li.human .ln { border-color: var(--amber); color: var(--amber); }
+  li.machine .ln { border-color: rgba(110, 168, 254, 0.55); color: var(--blue); }
+  .lt { font-weight: 650; font-size: 16.5px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .badge {
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em;
+    padding: 2px 8px; border-radius: 99px; text-transform: uppercase;
+  }
+  .badge.h { color: var(--amber); background: rgba(232, 179, 57, 0.12); border: 1px solid rgba(232, 179, 57, 0.35); }
+  .badge.m { color: var(--blue); background: rgba(110, 168, 254, 0.10); border: 1px solid rgba(110, 168, 254, 0.3); }
+  .ld { color: var(--muted); font-size: 14.5px; margin-top: 5px; max-width: 700px; }
+  .ld strong { color: var(--text); font-weight: 600; }
+  .edge-note {
+    margin-top: 34px; max-width: 860px;
+    border: 1px solid var(--border); border-left: 3px solid var(--amber);
+    background: var(--panel); border-radius: 8px; padding: 16px 20px;
+    color: var(--muted); font-size: 14.5px;
+  }
+  .edge-note strong { color: var(--text); }
+
+  /* ---------- benchmark ---------- */
+  table.bench {
+    width: 100%; border-collapse: collapse; margin-top: 28px;
+    font-size: 14.5px;
+  }
+  table.bench th, table.bench td {
+    padding: 12px 14px; text-align: left;
+    border-bottom: 1px solid var(--border);
+  }
+  table.bench th {
+    font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--faint); font-weight: 600;
+  }
+  table.bench td.num { font-family: var(--mono); font-size: 14px; }
+  table.bench td.metric { color: var(--muted); }
+  table.bench .good { color: var(--green); }
+  table.bench .poor { color: var(--red); }
+  table.bench .flat { color: var(--muted); }
+  .bench-scroll { overflow-x: auto; }
+
+  .eval-chips {
+    margin-top: 36px;
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;
+  }
+  @media (max-width: 860px) { .eval-chips { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 480px) { .eval-chips { grid-template-columns: 1fr; } }
+  .chip {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px;
+  }
+  .chip .cn { font-family: var(--mono); font-size: 11px; color: var(--faint); letter-spacing: 0.06em; text-transform: uppercase; }
+  .chip .ct { font-size: 14px; font-weight: 600; margin: 3px 0 12px; }
+  .barrow { display: flex; align-items: center; gap: 10px; margin-top: 7px; }
+  .barrow .who { font-family: var(--mono); font-size: 10.5px; width: 28px; color: var(--faint); }
+  .bar { flex: 1; height: 8px; border-radius: 99px; background: var(--bg-soft); overflow: hidden; }
+  .bar > i { display: block; height: 100%; border-radius: 99px; }
+  .bar > i.g { background: var(--green); }
+  .bar > i.r { background: var(--red); }
+  .bar > i.a { background: var(--amber); }
+  .barrow .sc { font-family: var(--mono); font-size: 12px; width: 36px; text-align: right; }
+  .sc.g { color: var(--green); } .sc.r { color: var(--red); } .sc.a { color: var(--amber); }
+
+  .variance-note {
+    margin-top: 30px; max-width: 860px;
+    border: 1px solid var(--border); border-left: 3px solid var(--red);
+    background: var(--panel); border-radius: 8px; padding: 16px 20px;
+    color: var(--muted); font-size: 14.5px;
+  }
+  .variance-note strong { color: var(--text); }
+
+  /* ---------- evidence tabs ---------- */
+  .tabs { display: flex; gap: 8px; margin: 30px 0 0; flex-wrap: wrap; }
+  .tab-btn {
+    font-family: var(--mono); font-size: 13px;
+    background: var(--panel); color: var(--muted);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 9px 14px; cursor: pointer; transition: all 0.15s ease;
+  }
+  .tab-btn:hover { color: var(--text); border-color: var(--faint); }
+  .tab-btn.active { color: var(--teal); border-color: rgba(79, 214, 196, 0.5); background: rgba(79, 214, 196, 0.06); }
+  .tab-btn .star { color: var(--amber); }
+
+  .tab-panel { display: none; margin-top: 26px; }
+  .tab-panel.active { display: block; }
+
+  .spot {
+    border: 1px solid rgba(232, 179, 57, 0.4); border-left: 3px solid var(--amber);
+    background: rgba(232, 179, 57, 0.05);
+    border-radius: 8px; padding: 16px 20px; margin-bottom: 24px;
+    font-size: 14.5px; color: var(--muted);
+  }
+  .spot strong { color: var(--amber); }
+  .spot b { color: var(--text); }
+
+  .prompt-block {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px 20px; margin-bottom: 20px;
+  }
+  .prompt-block .pl {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--faint); margin-bottom: 8px;
+  }
+  .prompt-block p { font-family: var(--mono); font-size: 13.5px; line-height: 1.65; color: var(--text); }
+
+  .scoreline {
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+    margin-bottom: 16px; font-size: 14px;
+  }
+  .scorepill {
+    font-family: var(--mono); font-size: 13px; font-weight: 600;
+    padding: 4px 12px; border-radius: 99px;
+  }
+  .scorepill.new { color: var(--green); background: var(--green-dim); border: 1px solid rgba(67, 209, 122, 0.35); }
+  .scorepill.old-ok { color: var(--green); background: var(--green-dim); border: 1px solid rgba(67, 209, 122, 0.35); }
+  .scorepill.old-mid { color: var(--amber); background: rgba(232, 179, 57, 0.1); border: 1px solid rgba(232, 179, 57, 0.35); }
+  .scorepill.old-bad { color: var(--red); background: var(--red-dim); border: 1px solid rgba(242, 101, 95, 0.35); }
+  .vsx { color: var(--faint); font-family: var(--mono); font-size: 12px; }
+
+  .duo { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 860px) { .duo { grid-template-columns: 1fr; } }
+  .outbox { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--panel); }
+  .outbox .oh {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 9px 14px; border-bottom: 1px solid var(--border);
+    font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.08em; text-transform: uppercase;
+  }
+  .outbox.newer .oh { color: var(--green); background: rgba(67, 209, 122, 0.06); }
+  .outbox.older .oh { color: var(--red); background: rgba(242, 101, 95, 0.05); }
+  .outbox.older.okish .oh { color: var(--muted); background: var(--bg-soft); }
+  .outbox pre {
+    font-family: var(--mono); font-size: 12.5px; line-height: 1.6;
+    padding: 14px 16px; overflow: auto; max-height: 380px;
+    color: #c7d0dd; white-space: pre; tab-size: 2;
+  }
+  .outbox pre .hl { color: var(--teal); }
+  .outbox pre .miss { color: var(--red); }
+  .oh .mini { font-size: 10px; color: var(--faint); text-transform: none; letter-spacing: 0; }
+
+  .asserts { margin-top: 22px; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .asserts .ah {
+    font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--faint); padding: 10px 16px; background: var(--bg-soft);
+    border-bottom: 1px solid var(--border);
+  }
+  .assert { padding: 13px 16px; border-bottom: 1px solid var(--border-soft); background: var(--panel); }
+  .assert:last-child { border-bottom: none; }
+  .a-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .a-name { font-family: var(--mono); font-size: 13px; font-weight: 600; color: var(--text); }
+  .mark {
+    font-family: var(--mono); font-size: 11px; padding: 1.5px 9px; border-radius: 99px;
+    white-space: nowrap;
+  }
+  .mark.np { color: var(--green); background: var(--green-dim); }
+  .mark.nf { color: var(--red); background: var(--red-dim); }
+  .mark.op { color: var(--green); background: var(--green-dim); opacity: 0.75; }
+  .mark.of { color: var(--red); background: var(--red-dim); }
+  .a-ev { margin-top: 6px; font-size: 13px; color: var(--muted); line-height: 1.55; }
+  .a-ev .tag {
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+    margin-right: 8px; padding: 1px 6px; border-radius: 4px;
+  }
+  .a-ev .tag.tn { color: var(--green); background: var(--green-dim); }
+  .a-ev .tag.to { color: var(--muted); background: var(--bg-soft); border: 1px solid var(--border); }
+  .a-ev.failrow { color: #cfa7a5; }
+
+  /* ---------- before / after ---------- */
+  .ba-grid { display: grid; gap: 18px; margin-top: 30px; }
+  .ba-card { border: 1px solid var(--border); border-radius: 12px; background: var(--panel); overflow: hidden; }
+  .ba-card .ba-title {
+    padding: 14px 20px 0; font-weight: 650; font-size: 16px;
+  }
+  .ba-card .ba-why {
+    padding: 6px 20px 16px; color: var(--muted); font-size: 14px; max-width: 880px;
+  }
+  .ba-card .ba-why strong { color: var(--text); }
+  .ba-cols { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--border); }
+  @media (max-width: 860px) { .ba-cols { grid-template-columns: 1fr; } }
+  .ba-col { padding: 14px 20px 18px; }
+  .ba-col + .ba-col { border-left: 1px solid var(--border); }
+  @media (max-width: 860px) { .ba-col + .ba-col { border-left: none; border-top: 1px solid var(--border); } }
+  .ba-col .cl {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.1em;
+    text-transform: uppercase; margin-bottom: 8px;
+  }
+  .ba-col.before .cl { color: var(--red); }
+  .ba-col.after .cl { color: var(--green); }
+  .ba-col blockquote {
+    font-family: var(--mono); font-size: 12.5px; line-height: 1.65; color: #c7d0dd;
+    white-space: pre-wrap;
+  }
+  .ba-col blockquote .gap { color: var(--faint); font-style: italic; }
+
+  /* ---------- try it ---------- */
+  .trigger-chips { display: flex; flex-wrap: wrap; gap: 9px; margin: 24px 0 10px; }
+  .tchip {
+    font-family: var(--mono); font-size: 13px; color: var(--teal);
+    background: rgba(79, 214, 196, 0.06); border: 1px solid rgba(79, 214, 196, 0.3);
+    border-radius: 99px; padding: 6px 14px;
+  }
+  .shape {
+    font-family: var(--mono); font-size: 13px; color: var(--muted);
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 18px; margin: 20px 0 8px; overflow-x: auto; white-space: nowrap;
+  }
+  .shape b { color: var(--amber); font-weight: 600; }
+  .shape i { color: var(--blue); font-style: normal; }
+
+  .tpl-list { display: grid; gap: 14px; margin-top: 28px; }
+  .tpl {
+    border: 1px solid var(--border); border-radius: 10px; background: var(--panel);
+    overflow: hidden; position: relative;
+  }
+  .tpl .th {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--bg-soft);
+  }
+  .tpl .tn2 { font-size: 13.5px; font-weight: 600; }
+  .tpl .tn2 .n { font-family: var(--mono); color: var(--faint); margin-right: 8px; }
+  .copy-btn {
+    font-family: var(--mono); font-size: 11px; color: var(--muted);
+    background: transparent; border: 1px solid var(--border); border-radius: 6px;
+    padding: 4px 12px; cursor: pointer; transition: all 0.15s ease; white-space: nowrap;
+  }
+  .copy-btn:hover { color: var(--teal); border-color: rgba(79, 214, 196, 0.5); }
+  .tpl pre {
+    font-family: var(--mono); font-size: 12.5px; line-height: 1.65; color: #c7d0dd;
+    padding: 14px 16px; white-space: pre-wrap; word-break: break-word;
+  }
+
+  /* ---------- footer ---------- */
+  footer { padding: 48px 0 64px; color: var(--faint); font-size: 13.5px; }
+  footer .wrap { display: flex; flex-direction: column; gap: 8px; }
+  footer strong { color: var(--muted); font-weight: 600; }
+</style>
+</head>
+<body>
+
+<nav class="top">
+  <div class="wrap">
+    <span class="brand">decompose-goal · rebuild eval</span>
+    <a class="nl" href="#loop">The Loop</a>
+    <a class="nl" href="#benchmark">Benchmark</a>
+    <a class="nl keep" href="#evidence">Evidence</a>
+    <a class="nl" href="#before-after">Before / After</a>
+    <a class="nl keep" href="#try">Try It</a>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="eyebrow">A Claude Code case study · skill-creator methodology</div>
+    <h1 class="headline">
+      Rebuilt skill: <span class="ok">100% pass</span>.<br>
+      Old skill: <span class="bad">74.2%</span>.<br>
+      <span class="dim">Token cost: identical.</span>
+    </h1>
+    <p class="sub">
+      What happens when you ask Claude Code to <strong>&ldquo;tear it down and rebuild it&rdquo;</strong>
+      instead of &ldquo;improve it.&rdquo; One skill, one engineering loop, eight eval runs,
+      and an evidence trail you can audit line by line.
+    </p>
+    <div class="stat-row">
+      <div class="stat"><div class="v green">23 / 23</div><div class="k">assertions passed, rebuilt skill</div></div>
+      <div class="stat"><div class="v red">17 / 23</div><div class="k">assertions passed, old skill</div></div>
+      <div class="stat"><div class="v teal">+1.2%</div><div class="k">token cost of the improvement</div></div>
+      <div class="stat"><div class="v">8</div><div class="k">eval runs: 4 prompts &times; 2 skill versions</div></div>
+    </div>
+  </div>
+</header>
+
+<main>
+
+<!-- ================= THE LOOP ================= -->
+<section id="loop">
+  <div class="wrap">
+    <div class="sec-eyebrow">01 · The Loop</div>
+    <h2>Not a rewrite. An engineering loop.</h2>
+    <p class="lede">
+      The skill under test is <code class="inl">decompose-goal</code>: it flattens a free-text goal
+      (&ldquo;check the container, redeploy if down, verify&rdquo;) into atomic subtasks that agents,
+      workflow engines, cron jobs, or humans can execute. The request was simple:
+      <strong>&ldquo;review, tear down, and rebuild it.&rdquo;</strong>
+      Instead of a one-shot rewrite, that phrase triggered Claude Code&rsquo;s skill-creator
+      methodology, which imposed the loop below. The human sits at the edges. The machine
+      runs the middle.
+    </p>
+    <div class="loop-legend">
+      <span class="lg"><span class="dot h"></span> human decides</span>
+      <span class="lg"><span class="dot m"></span> machine executes</span>
+    </div>
+    <ol class="loop">
+      <li class="machine">
+        <span class="ln">1</span>
+        <div class="lt">Callsite research first <span class="badge m">machine</span></div>
+        <div class="ld">
+          Before touching a line: grep for everything that actually consumes the skill&rsquo;s output.
+          The research found the skill&rsquo;s documented sponsor was <strong>wrong</strong>. The real consumer
+          was a nightly cron worker that parses the output headlessly and depends on a hard contract:
+          a literal <code class="inl">Atomic subtasks (N):</code> header. Break that line, break production.
+        </div>
+      </li>
+      <li class="human">
+        <span class="ln">2</span>
+        <div class="lt">Design decisions surfaced to the human <span class="badge h">human</span></div>
+        <div class="ld">
+          Four multi-choice questions, asked <strong>before any code</strong>:
+          add a JSON schema? (<strong>yes</strong>) &middot; dependency annotations? (<strong>opt-in</strong>) &middot;
+          per-subtask verification rule? (<strong>as an internal litmus test</strong>) &middot;
+          publish a shareable version? (<strong>deferred</strong>).
+          The human spends 60 seconds making four decisions, not 60 minutes reviewing a surprise rewrite.
+        </div>
+      </li>
+      <li class="machine">
+        <span class="ln">3</span>
+        <div class="lt">Snapshot the old skill <span class="badge m">machine</span></div>
+        <div class="ld">
+          A byte-for-byte frozen copy of the original. Two jobs: <strong>rollback insurance</strong>
+          if the rewrite is worse, and an <strong>honest A/B baseline</strong>. Without it you know
+          the new skill scores 100%, but not whether the old one would have too.
+        </div>
+      </li>
+      <li class="machine">
+        <span class="ln">4</span>
+        <div class="lt">Rewrite <span class="badge m">machine</span></div>
+        <div class="ld">
+          Orchestrator-specific framing replaced with <strong>executor profiles</strong>
+          (agent turn / DAG node / cron run / human checklist), a fully specified
+          <strong>JSON schema</strong>, opt-in <code class="inl">[after: N]</code> dependency annotations,
+          and a <strong>verification litmus test</strong>: if you can&rsquo;t state how to verify a subtask
+          succeeded, it&rsquo;s still compound. Decompose further.
+        </div>
+      </li>
+      <li class="machine">
+        <span class="ln">5</span>
+        <div class="lt">Four evals, run blind, twice over <span class="badge m">machine</span></div>
+        <div class="ld">
+          Four realistic prompts, each executed by <strong>two parallel fresh subagents</strong>:
+          one with the new skill loaded, one with the old snapshot. Eight runs total.
+          Same prompts for both sides, so any score difference is attributable to the skill text,
+          not the questions.
+        </div>
+      </li>
+      <li class="machine">
+        <span class="ln">6</span>
+        <div class="lt">Assertion-based grading with written evidence <span class="badge m">machine</span></div>
+        <div class="ld">
+          Every run graded against per-eval assertions. Each verdict carries a quoted
+          evidence line, so &ldquo;fail&rdquo; is never just a vibe; it points at the exact line that broke.
+        </div>
+      </li>
+      <li class="machine">
+        <span class="ln">7</span>
+        <div class="lt">Aggregate benchmark <span class="badge m">machine</span></div>
+        <div class="ld">
+          All grades roll up into one table: <strong>new skill 100% (&plusmn;0%)</strong> vs
+          <strong>old skill 74.2% (&plusmn;29%)</strong>, at the same wall-clock time and a ~1% token delta.
+          This is the go/no-go signal for promoting the rewrite.
+        </div>
+      </li>
+      <li class="human">
+        <span class="ln">8</span>
+        <div class="lt">Human review &rarr; feedback &rarr; iteration 2 <span class="badge h">human</span></div>
+        <div class="ld">
+          A self-contained review page renders every output and grade side by side so the author
+          can audit <strong>the grader itself</strong>, then export structured feedback. Disagreements become
+          fixed assertions; observed weaknesses become new evals. The same eval set is reused, so
+          iteration 2&rsquo;s score is directly comparable to iteration 1&rsquo;s.
+        </div>
+      </li>
+    </ol>
+    <div class="edge-note">
+      <strong>Human at the edges, machine in the middle.</strong>
+      The author makes design decisions up front (step 2) and exercises judgment at the end (step 8).
+      Everything between (snapshotting, rewriting, running, grading, aggregating) is mechanical
+      and reproducible. The benchmark is a signal, not an auto-approval.
+    </div>
+  </div>
+</section>
+
+<!-- ================= BENCHMARK ================= -->
+<section id="benchmark">
+  <div class="wrap">
+    <div class="sec-eyebrow">02 · The Benchmark</div>
+    <h2>Same prompts. Same model. Same cost. Different skill text.</h2>
+    <p class="lede">
+      Both configurations answered the same four prompts in fresh subagent sessions.
+      The only variable was which version of the skill file was loaded.
+    </p>
+    <div class="bench-scroll">
+      <table class="bench">
+        <thead>
+          <tr><th>Metric</th><th>Old skill</th><th>Rebuilt skill</th><th>Delta</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="metric">Pass rate (mean across evals)</td>
+            <td class="num poor">74.2% &plusmn; 28.6%</td>
+            <td class="num good">100% &plusmn; 0%</td>
+            <td class="num good">+25.8 pts</td>
+          </tr>
+          <tr>
+            <td class="metric">Assertions passed</td>
+            <td class="num poor">17 / 23</td>
+            <td class="num good">23 / 23</td>
+            <td class="num good">+6</td>
+          </tr>
+          <tr>
+            <td class="metric">Wall-clock per run</td>
+            <td class="num">47.5s &plusmn; 7.7s</td>
+            <td class="num">47.4s &plusmn; 7.0s</td>
+            <td class="num flat">&minus;0.2% (noise)</td>
+          </tr>
+          <tr>
+            <td class="metric">Tokens per run</td>
+            <td class="num">76,645 &plusmn; 678</td>
+            <td class="num">77,553 &plusmn; 484</td>
+            <td class="num flat">+908 (+1.2%)</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="eval-chips">
+      <div class="chip">
+        <div class="cn">Eval 0</div>
+        <div class="ct">Default markdown contract</div>
+        <div class="barrow"><span class="who">new</span><div class="bar"><i class="g" style="width:100%"></i></div><span class="sc g">6/6</span></div>
+        <div class="barrow"><span class="who">old</span><div class="bar"><i class="g" style="width:100%"></i></div><span class="sc g">6/6</span></div>
+      </div>
+      <div class="chip">
+        <div class="cn">Eval 1 ★</div>
+        <div class="ct">JSON mode</div>
+        <div class="barrow"><span class="who">new</span><div class="bar"><i class="g" style="width:100%"></i></div><span class="sc g">6/6</span></div>
+        <div class="barrow"><span class="who">old</span><div class="bar"><i class="r" style="width:33.3%"></i></div><span class="sc r">2/6</span></div>
+      </div>
+      <div class="chip">
+        <div class="cn">Eval 2</div>
+        <div class="ct">Dependency DAG</div>
+        <div class="barrow"><span class="who">new</span><div class="bar"><i class="g" style="width:100%"></i></div><span class="sc g">6/6</span></div>
+        <div class="barrow"><span class="who">old</span><div class="bar"><i class="a" style="width:83.3%"></i></div><span class="sc a">5/6</span></div>
+      </div>
+      <div class="chip">
+        <div class="cn">Eval 3</div>
+        <div class="ct">Executor framing (LangGraph)</div>
+        <div class="barrow"><span class="who">new</span><div class="bar"><i class="g" style="width:100%"></i></div><span class="sc g">5/5</span></div>
+        <div class="barrow"><span class="who">old</span><div class="bar"><i class="a" style="width:80%"></i></div><span class="sc a">4/5</span></div>
+      </div>
+    </div>
+
+    <div class="variance-note">
+      <strong>The variance is the real finding.</strong> The old skill&rsquo;s &plusmn;29% standard deviation
+      means it aced the easy evals and collapsed on JSON mode and DAG framing. For a dispatch
+      contract that programs parse, <em>unreliable</em> is worse than <em>uniformly mediocre</em>:
+      you can&rsquo;t build on output whose shape changes run to run.
+    </div>
+  </div>
+</section>
+
+<!-- ================= EVIDENCE ================= -->
+<section id="evidence">
+  <div class="wrap">
+    <div class="sec-eyebrow">03 · The Evidence</div>
+    <h2>Don&rsquo;t trust the table. Read the runs.</h2>
+    <p class="lede">
+      Every eval below shows the actual prompt, both raw outputs side by side, and the
+      grader&rsquo;s assertion-by-assertion verdicts with evidence. Paths and hosts have been
+      replaced with neutral placeholders; structure and content are otherwise verbatim.
+    </p>
+
+    <div class="tabs" role="tablist">
+      <button class="tab-btn" data-tab="ev0" role="tab">Eval 0 · markdown contract</button>
+      <button class="tab-btn active" data-tab="ev1" role="tab"><span class="star">★</span> Eval 1 · JSON mode</button>
+      <button class="tab-btn" data-tab="ev2" role="tab">Eval 2 · dependency DAG</button>
+      <button class="tab-btn" data-tab="ev3" role="tab">Eval 3 · executor framing</button>
+    </div>
+
+    <!-- ============ EVAL 1 (featured) ============ -->
+    <div class="tab-panel active" id="ev1">
+      <div class="spot">
+        <strong>Featured: the 2/6 collapse.</strong>
+        The old skill&rsquo;s description <b>promised</b> &ldquo;a numbered JSON or Markdown list&rdquo; but never
+        defined a single JSON field. So the model invented an ad-hoc shape: subtasks with only
+        <b>id</b> and <b>action</b>, an invented <b>&ldquo;atomic_subtasks&rdquo;</b> key instead of <b>count</b>, the halt
+        token buried in prose instead of a machine-readable field, and no <b>verify</b> anywhere.
+        A human reading both outputs might shrug; both look reasonable. A <b>program</b> keyed to
+        the schema parses the new output and breaks on the old one.
+        <b>Four of six failures trace back to one missing paragraph.</b>
+      </div>
+
+      <div class="prompt-block">
+        <div class="pl">Prompt</div>
+        <p>Decompose this goal into subtasks as JSON: Check whether the webapp container on the
+        container host is running via the Portainer API. If it&rsquo;s running, output [HEALTHY] and
+        halt. If not, pull the latest webapp image, redeploy the stack with PullImage true, then
+        verify the container came up.</p>
+      </div>
+
+      <div class="scoreline">
+        <span class="scorepill new">NEW 6/6</span><span class="vsx">vs</span><span class="scorepill old-bad">OLD 2/6</span>
+      </div>
+
+      <div class="duo">
+        <div class="outbox newer">
+          <div class="oh"><span>Rebuilt skill output</span><span class="mini">decomposition.json</span></div>
+          <pre>{
+  "goal": "Check whether the webapp container on the
+   container host is running via the Portainer API.
+   If it's running, output [HEALTHY] and halt. If
+   not, pull the latest webapp image, redeploy the
+   stack with PullImage true, then verify the
+   container came up.",
+  <span class="hl">"count": 5,</span>
+  "subtasks": [
+    {
+      "id": 1,
+      "action": "Query the Portainer API
+       (https://portainer.internal:9443, endpoint 1)
+       for the webapp container's state — capture
+       whether it is running.",
+      "artifacts": ["https://portainer.internal:9443
+       /api/endpoints/1/docker/containers/json"],
+      "halt_condition": null,
+      "depends_on": [],
+      <span class="hl">"verify": "A running/not-running state value for
+       the webapp container was captured from the
+       Portainer API response."</span>
+    },
+    {
+      "id": 2,
+      "action": "If the webapp container is running,
+       output [HEALTHY] and halt.",
+      "artifacts": [],
+      <span class="hl">"halt_condition": "[HEALTHY]",</span>
+      "depends_on": [1],
+      "verify": "Either [HEALTHY] was emitted and
+       execution stopped, or the container was not
+       running and execution continued."
+    },
+    {
+      "id": 3,
+      "action": "Pull the latest webapp image via the
+       Portainer API (POST /api/endpoints/1/docker
+       /images/create?fromImage=acme/webapp&amp;tag=latest).",
+      "artifacts": ["https://portainer.internal:9443
+       /api/endpoints/1/docker/images/create"],
+      "halt_condition": null,
+      "depends_on": [2],
+      "verify": "The image-pull API call returned
+       success and the latest webapp image is present
+       on the Docker host."
+    },
+    {
+      "id": 4,
+      "action": "Redeploy the webapp stack via the
+       Portainer API (PUT /api/stacks/{id} with
+       PullImage: true).",
+      "artifacts": ["https://portainer.internal:9443
+       /api/stacks/{id}"],
+      "halt_condition": null,
+      "depends_on": [3],
+      "verify": "The stack-update API call returned
+       success (HTTP 200) for the webapp stack."
+    },
+    {
+      "id": 5,
+      "action": "Verify via the Portainer API that
+       the webapp container is now running.",
+      "artifacts": ["https://portainer.internal:9443
+       /api/endpoints/1/docker/containers/json"],
+      "halt_condition": null,
+      "depends_on": [4],
+      "verify": "The Portainer API reports the webapp
+       container in a running state after the
+       redeploy."
+    }
+  ]
+}</pre>
+        </div>
+        <div class="outbox older">
+          <div class="oh"><span>Old skill output</span><span class="mini">decomposition.json</span></div>
+          <pre>{
+  <span class="miss">"atomic_subtasks": 5,</span>   <span class="miss">&larr; invented key, no "count"</span>
+  "subtasks": [
+    {
+      "id": 1,
+      "action": "Query the webapp container state on
+       the container host via GET
+       https://portainer.internal:9443/api/endpoints
+       /3/docker/containers/json?all=true
+       (authenticate with the stored Portainer
+       credentials in the same call) — capture the
+       webapp container's Id and State."
+    },                       <span class="miss">&larr; only id + action;</span>
+                             <span class="miss">  no artifacts, no</span>
+                             <span class="miss">  halt_condition, no</span>
+                             <span class="miss">  depends_on, no verify</span>
+    {
+      "id": 2,
+      "action": "If the webapp container State is
+       \"running\", <span class="miss">output [HEALTHY]</span> and halt."
+    },                       <span class="miss">&larr; halt token buried in</span>
+                             <span class="miss">  prose, not a field</span>
+    {
+      "id": 3,
+      "action": "Pull the latest webapp image via POST
+       https://portainer.internal:9443/api/endpoints
+       /3/docker/images/create?fromImage=acme/webapp
+       &amp;tag=latest (re-authenticate in the same
+       call)."
+    },
+    {
+      "id": 4,
+      "action": "Redeploy the webapp stack via PUT
+       https://portainer.internal:9443/api/stacks
+       /&lt;webapp-stack-id&gt;?endpointId=1 with PullImage:
+       true in the request body (re-authenticate in
+       the same call)."
+    },
+    {
+      "id": 5,
+      "action": "Verify the webapp container State is
+       \"running\" by re-querying GET
+       https://portainer.internal:9443/api/endpoints
+       /3/docker/containers/json?all=true — report
+       the observed state as the final result."
+    }
+  ]
+}</pre>
+        </div>
+      </div>
+
+      <div class="asserts">
+        <div class="ah">Assertions · grader verdicts with evidence</div>
+        <div class="assert">
+          <div class="a-head"><span class="a-name">single-parseable-json</span><span class="mark np">new ✓</span><span class="mark op">old ✓</span></div>
+          <div class="a-ev"><span class="tag tn">new</span>One fenced json block; valid JSON with goal/count/subtasks.</div>
+          <div class="a-ev"><span class="tag to">old</span>One fenced json block, valid JSON.</div>
+        </div>
+        <div class="assert">
+          <div class="a-head"><span class="a-name">schema-fields-complete</span><span class="mark np">new ✓</span><span class="mark of">old ✗</span></div>
+          <div class="a-ev"><span class="tag tn">new</span>All 5 subtasks carry all six fields.</div>
+          <div class="a-ev failrow"><span class="tag to">old</span>Subtasks have only id and action. The old skill promised JSON in its description but never defined a schema, so the model invented a minimal ad-hoc shape.</div>
+        </div>
+        <div class="assert">
+          <div class="a-head"><span class="a-name">count-matches-length</span><span class="mark np">new ✓</span><span class="mark of">old ✗</span></div>
+          <div class="a-ev"><span class="tag tn">new</span>count: 5, subtasks array has 5 entries.</div>
+          <div class="a-ev failrow"><span class="tag to">old</span>No 'count' field; an ad-hoc 'atomic_subtasks': 5 key was invented instead. A programmatic consumer keyed to the schema would break.</div>
+        </div>
+        <div class="assert">
+          <div class="a-head"><span class="a-name">healthy-halt-condition</span><span class="mark np">new ✓</span><span class="mark of">old ✗</span></div>
+          <div class="a-ev"><span class="tag tn">new</span>Subtask 2 has "halt_condition": "[HEALTHY]".</div>
+          <div class="a-ev failrow"><span class="tag to">old</span>[HEALTHY] only appears embedded inside subtask 2's action text; there is no halt_condition field to read.</div>
+        </div>
+        <div class="assert">
+          <div class="a-head"><span class="a-name">verify-is-observable</span><span class="mark np">new ✓</span><span class="mark of">old ✗</span></div>
+          <div class="a-ev"><span class="tag tn">new</span>e.g. subtask 4: "The stack-update API call returned success (HTTP 200)" &mdash; checkable states, not restatements.</div>
+          <div class="a-ev failrow"><span class="tag to">old</span>No verify fields exist anywhere in the output.</div>
+        </div>
+        <div class="assert">
+          <div class="a-head"><span class="a-name">no-chained-actions</span><span class="mark np">new ✓</span><span class="mark op">old ✓</span></div>
+          <div class="a-ev"><span class="tag tn">new</span>Subtasks 3, 4, 5 split image pull / stack update / running-state verification.</div>
+          <div class="a-ev"><span class="tag to">old</span>Subtasks 3, 4, 5 are correctly split. The decomposition itself was fine; the structure failed.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ EVAL 0 ============ -->
+    <div class="tab-panel" id="ev0">
+      <div class="prompt-block">
+        <div class="pl">Prompt</div>
+        <p>Decompose this goal into subtasks: Nightly repo hygiene on the workstation &mdash; run git
+        status across every repo under ~/projects, list any repo with uncommitted changes older
+        than 7 days, write the report to ~/reports/repo-hygiene-&lt;date&gt;.md, and if every repo is
+        clean output [ALL_CLEAN] and stop.</p>
+      </div>
+
+      <div class="scoreline">
+        <span class="scorepill new">NEW 6/6</span><span class="vsx">vs</span><span class="scorepill old-ok">OLD 6/6</span>
+      </div>
+      <p class="lede" style="margin-bottom:16px">
+        The control case. This is the bread-and-butter markdown contract the nightly cron worker
+        parses, and the old skill was genuinely good at it. The rebuild had to <strong>not regress</strong> here,
+        and didn&rsquo;t.
+      </p>
+
+      <div class="duo">
+        <div class="outbox newer">
+          <div class="oh"><span>Rebuilt skill output</span><span class="mini">decomposition.md</span></div>
+          <pre>Atomic subtasks (5):
+1. Enumerate every git repository under ~/projects
+   (directories containing a .git) — capture the
+   repo list.
+2. Run `git status --porcelain` in each enumerated
+   repo — capture which repos have uncommitted
+   changes.
+3. For each repo with uncommitted changes, check
+   whether the changes are older than 7 days —
+   capture the flagged repo list.
+4. If the flagged repo list is empty, output
+   [ALL_CLEAN] and halt.
+5. Write the report listing each flagged repo and
+   its stale uncommitted changes to
+   ~/reports/repo-hygiene-&lt;date&gt;.md.</pre>
+        </div>
+        <div class="outbox older okish">
+          <div class="oh"><span>Old skill output</span><span class="mini">decomposition.md</span></div>
+          <pre>Atomic subtasks (5):
+1. Enumerate every git repository under ~/projects
+   (directories containing a `.git`) — capture the
+   repo list.
+2. Run `git status --porcelain` in each enumerated
+   repo — capture per-repo uncommitted changes.
+3. If every repo reports zero uncommitted changes,
+   output [ALL_CLEAN] and halt.
+4. For each repo with uncommitted changes, check
+   the modification timestamps of the changed
+   files — keep only repos whose uncommitted
+   changes are older than 7 days.
+5. Write the report listing those repos (repo path
+   + dirty files + change age) to
+   ~/reports/repo-hygiene-&lt;date&gt;.md.</pre>
+        </div>
+      </div>
+
+      <div class="asserts">
+        <div class="ah">Assertions · grader verdicts with evidence</div>
+        <div class="assert">
+          <div class="a-head"><span class="a-name">header-line-present</span><span class="mark np">new ✓</span><span class="mark op">old ✓</span></div>
+          <div class="a-ev"><span class="tag tn">new</span>First line is 'Atomic subtasks (5):' and there are exactly 5 numbered lines.</div>
+          <div class="a-ev"><span class="tag to">old</span>First line is 'Atomic subtasks (5):' with 5 numbered lines.</div>
+        </div>
+        <div class="assert">
+          <div class="a-head"><span class="a-name">imperative-no-chaining</span><span class="mark np">new ✓</span><span class="mark op">old ✓</span></div>
+          <div class="a-ev"><span class="tag tn">new</span>Lines start Enumerate/Run/For each.../If.../Write; no line joins two distinct actions with and/then.</div>
+          <div class="a-ev"><span class="tag to">old</span>No and/then chaining in any line.</div>
+        </div>
+        <div class="assert">
+          <div class="a-head"><span class="a-name">halt-branch-present</span><span class="mark np">new ✓</span><span class="mark op">old ✓</span></div>
+          <div class="a-ev"><span class="tag tn">new</span>Line 4: 'If the flagged repo list is empty, output [ALL_CLEAN] and halt.'</div>
+          <div class="a-ev"><span class="tag to">old</span>Line 3: 'If every repo reports zero uncommitted changes, output [ALL_CLEAN] and halt.'</div>
+        </div>
+        <div class="assert">
+          <div class="a-head"><span class="a-name">artifacts-named</span><span class="mark np">new ✓</span><span class="mark op">old ✓</span></div>
+          <div class="a-ev"><span class="tag tn">new</span>Line 5 names ~/reports/repo-hygiene-&lt;date&gt;.md verbatim.</div>
+          <div class="a-ev"><span class="tag to">old</span>Line 5 names ~/reports/repo-hygiene-&lt;date&gt;.md.</div>
+        </div>
+        <div class="assert">
+          <div class="a-head"><span class="a-name">no-invented-steps</span><span class="mark np">new ✓</span><span class="mark op">old ✓</span></div>
+          <div class="a-ev"><span class="tag tn">new</span>5 subtasks map 1:1 onto enumerate/status/age-filter/halt/write; no commits, pushes, or notifications added.</div>
+          <div class="a-ev"><span class="tag to">old</span>5 subtasks, all implied by the goal.</div>
+        </div>
+        <div class="assert">
+          <div class="a-head"><span class="a-name">no-optional-modes-leak</span><span class="mark np">new ✓</span><span class="mark op">old ✓</span></div>
+          <div class="a-ev"><span class="tag tn">new</span>Plain numbered markdown list only.</div>
+          <div class="a-ev"><span class="tag to">old</span>Plain numbered markdown list only.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ EVAL 2 ============ -->
+    <div class="tab-panel" id="ev2">
+      <div class="prompt-block">
+        <div class="pl">Prompt</div>
+        <p>Decompose this goal into subtasks with dependencies: Generate three marketing assets
+        for the product launch &mdash; a hero image, a 30-second video script, and a landing-page
+        headline set &mdash; then assemble all three into a review doc at ~/drafts/launch-pack.md and
+        notify me it is ready for review.</p>
+      </div>
+
+      <div class="scoreline">
+        <span class="scorepill new">NEW 6/6</span><span class="vsx">vs</span><span class="scorepill old-mid">OLD 5/6</span>
+      </div>
+      <p class="lede" style="margin-bottom:16px">
+        The old skill had no dependency convention at all, so the model improvised: it invented a
+        <code class="inl">[deps:]</code> syntax on the spot, then appended explanatory prose after the list.
+        Reasonable for a human. Fatal for a deterministic parser, because the improvisation
+        would differ run to run.
+      </p>
+
+      <div class="duo">
+        <div class="outbox newer">
+          <div class="oh"><span>Rebuilt skill output</span><span class="mini">decomposition.md</span></div>
+          <pre>Atomic subtasks (5):
+1. Generate the launch hero image; save it to
+   ~/drafts/launch-hero-image.png.
+2. Write the 30-second launch video script.
+3. Write the landing-page headline set.
+4. Assemble the hero image, video script, and
+   headline set into a review doc at
+   ~/drafts/launch-pack.md. <span class="hl">[after: 1, 2, 3]</span>
+5. Notify the requester that
+   ~/drafts/launch-pack.md is ready for review.
+   <span class="hl">[after: 4]</span></pre>
+        </div>
+        <div class="outbox older okish">
+          <div class="oh"><span>Old skill output</span><span class="mini">decomposition.md</span></div>
+          <pre>Atomic subtasks (5):
+1. Generate a hero image for the launch — save the
+   image artifact (or its path/URL) for assembly.
+   <span class="miss">[deps: none]</span>  <span class="miss">&larr; invented ad-hoc syntax</span>
+2. Write a 30-second video script for the launch —
+   capture the script text for assembly.
+   <span class="miss">[deps: none]</span>
+3. Write a landing-page headline set for the
+   launch — capture the headline variants for
+   assembly. <span class="miss">[deps: none]</span>
+4. Assemble the hero image (from 1), video script
+   (from 2), and headline set (from 3) into a
+   review doc at ~/drafts/launch-pack.md.
+   <span class="miss">[deps: 1, 2, 3]</span>
+5. Notify the requester that
+   ~/drafts/launch-pack.md is ready for review.
+   <span class="miss">[deps: 4]</span>
+
+<span class="miss">Dependency notes: subtasks 1–3 are independent and
+can run in parallel; subtask 4 blocks on all three;
+subtask 5 blocks on 4.</span>
+<span class="miss">&uarr; trailing commentary a parser would choke on</span></pre>
+        </div>
+      </div>
+
+      <div class="asserts">
+        <div class="ah">Assertions · grader verdicts with evidence</div>
+        <div class="assert">
+          <div class="a-head"><span class="a-name">header-line-present</span><span class="mark np">new ✓</span><span class="mark op">old ✓</span></div>
+          <div class="a-ev"><span class="tag tn">new</span>'Atomic subtasks (5):' with 5 lines.</div>
+          <div class="a-ev"><span class="tag to">old</span>'Atomic subtasks (5):' with 5 lines.</div>
+        </div>
+        <div class="assert">
+          <div class="a-head"><span class="a-name">parallel-assets-unannotated</span><span class="mark np">new ✓</span><span class="mark op">old ✓</span></div>
+          <div class="a-ev"><span class="tag tn">new</span>Lines 1-3 (hero image, video script, headline set) have no annotation &mdash; independently startable per the skill's annotated-mode semantics.</div>
+          <div class="a-ev"><span class="tag to">old</span>Lines 1-3 marked '[deps: none]' &mdash; an invented ad-hoc convention, but it does convey independent startability.</div>
+        </div>
+        <div class="assert">
+          <div class="a-head"><span class="a-name">assemble-depends-on-all-assets</span><span class="mark np">new ✓</span><span class="mark op">old ✓</span></div>
+          <div class="a-ev"><span class="tag tn">new</span>Line 4 ends with '[after: 1, 2, 3]'.</div>
+          <div class="a-ev"><span class="tag to">old</span>Line 4 marked '[deps: 1, 2, 3]'.</div>
+        </div>
+        <div class="assert">
+          <div class="a-head"><span class="a-name">notify-depends-on-assemble</span><span class="mark np">new ✓</span><span class="mark op">old ✓</span></div>
+          <div class="a-ev"><span class="tag tn">new</span>Line 5 ends with '[after: 4]'.</div>
+          <div class="a-ev"><span class="tag to">old</span>Line 5 marked '[deps: 4]'.</div>
+        </div>
+        <div class="assert">
+          <div class="a-head"><span class="a-name">imperative-no-chaining</span><span class="mark np">new ✓</span><span class="mark op">old ✓</span></div>
+          <div class="a-ev"><span class="tag tn">new</span>Assemble (4) and notify (5) are separate entries.</div>
+          <div class="a-ev"><span class="tag to">old</span>One action per line.</div>
+        </div>
+        <div class="assert">
+          <div class="a-head"><span class="a-name">output-only-header-and-list</span><span class="mark np">new ✓</span><span class="mark of">old ✗</span></div>
+          <div class="a-ev"><span class="tag tn">new</span>Output is exactly the header plus 5 numbered lines.</div>
+          <div class="a-ev failrow"><span class="tag to">old</span>Output ends with a 'Dependency notes:' prose paragraph after the list. The old skill had no dependency convention, so the model invented '[deps:]' syntax AND added explanatory commentary &mdash; format would vary run to run, breaking deterministic parsers.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ EVAL 3 ============ -->
+    <div class="tab-panel" id="ev3">
+      <div class="prompt-block">
+        <div class="pl">Prompt</div>
+        <p>I&rsquo;m wiring up a LangGraph workflow and need this flattened into nodes: scrape the
+        pricing pages of our three competitor sites, normalize each into a common JSON shape,
+        diff against last month&rsquo;s snapshot at ./data/pricing/2026-05.json, and write a changes
+        report &mdash; if nothing changed the workflow should just end with a NO_CHANGES output.</p>
+      </div>
+
+      <div class="scoreline">
+        <span class="scorepill new">NEW 5/5</span><span class="vsx">vs</span><span class="scorepill old-mid">OLD 4/5</span>
+      </div>
+      <p class="lede" style="margin-bottom:16px">
+        This eval deliberately tests the whole point of the rebuild: the old skill only knew one
+        kind of executor (a single agent taking turns inside one specific orchestrator). Asked for
+        workflow <strong>nodes</strong>, it produced a strictly sequential list and bundled all three
+        normalizations into one step. The rebuilt skill recognized a DAG engine and emitted a real
+        fan-out/fan-in graph.
+      </p>
+
+      <div class="duo">
+        <div class="outbox newer">
+          <div class="oh"><span>Rebuilt skill output</span><span class="mini">decomposition.md</span></div>
+          <pre>Atomic subtasks (9):
+1. Scrape the pricing page of competitor site 1 —
+   capture raw page content.
+2. Scrape the pricing page of competitor site 2 —
+   capture raw page content.
+3. Scrape the pricing page of competitor site 3 —
+   capture raw page content.
+4. Normalize the site 1 scrape into the common
+   pricing JSON shape. <span class="hl">[after: 1]</span>
+5. Normalize the site 2 scrape into the common
+   pricing JSON shape. <span class="hl">[after: 2]</span>
+6. Normalize the site 3 scrape into the common
+   pricing JSON shape. <span class="hl">[after: 3]</span>
+7. Diff the three normalized JSON objects against
+   the snapshot at ./data/pricing/2026-05.json —
+   capture the change set. <span class="hl">[after: 4, 5, 6]</span>
+8. If the change set is empty, output NO_CHANGES
+   and end the workflow. <span class="hl">[after: 7]</span>
+9. Write the changes report from the captured
+   change set. <span class="hl">[after: 8]</span></pre>
+        </div>
+        <div class="outbox older okish">
+          <div class="oh"><span>Old skill output</span><span class="mini">decomposition.md</span></div>
+          <pre>Atomic subtasks (8):
+1. Scrape the pricing page of competitor site 1 —
+   capture raw page content.
+2. Scrape the pricing page of competitor site 2 —
+   capture raw page content.
+3. Scrape the pricing page of competitor site 3 —
+   capture raw page content.
+4. <span class="miss">For each scraped pricing page</span>, normalize the
+   content into the common JSON shape — one
+   normalized object per competitor.
+   <span class="miss">&larr; three nodes bundled into one; hides the</span>
+   <span class="miss">  fan-out a DAG engine wants</span>
+5. Read last month's snapshot at
+   ./data/pricing/2026-05.json.
+6. Diff the three normalized JSON objects against
+   the snapshot from ./data/pricing/2026-05.json —
+   capture the change set.
+7. If the change set is empty, output NO_CHANGES
+   and halt.
+8. Write the changes report from the non-empty
+   change set.
+   <span class="miss">&larr; strictly sequential; zero dependency info</span></pre>
+        </div>
+      </div>
+
+      <div class="asserts">
+        <div class="ah">Assertions · grader verdicts with evidence</div>
+        <div class="assert">
+          <div class="a-head"><span class="a-name">usable-node-list</span><span class="mark np">new ✓</span><span class="mark op">old ✓</span></div>
+          <div class="a-ev"><span class="tag tn">new</span>'Atomic subtasks (9):' with 9 node-sized entries.</div>
+          <div class="a-ev"><span class="tag to">old</span>'Atomic subtasks (8):' with 8 entries.</div>
+        </div>
+        <div class="assert">
+          <div class="a-head"><span class="a-name">no-changes-shortcircuit</span><span class="mark np">new ✓</span><span class="mark op">old ✓</span></div>
+          <div class="a-ev"><span class="tag tn">new</span>Line 8: 'If the change set is empty, output NO_CHANGES and end the workflow. [after: 7]'.</div>
+          <div class="a-ev"><span class="tag to">old</span>Line 7: 'If the change set is empty, output NO_CHANGES and halt.'</div>
+        </div>
+        <div class="assert">
+          <div class="a-head"><span class="a-name">no-orchestrator-jargon</span><span class="mark np">new ✓</span><span class="mark op">old ✓</span></div>
+          <div class="a-ev"><span class="tag tn">new</span>Output is system-agnostic; speaks only of the workflow.</div>
+          <div class="a-ev"><span class="tag to">old</span>No internal orchestrator vocabulary or agent codenames leaked into the output.</div>
+        </div>
+        <div class="assert">
+          <div class="a-head"><span class="a-name">dag-awareness</span><span class="mark np">new ✓</span><span class="mark of">old ✗</span></div>
+          <div class="a-ev"><span class="tag tn">new</span>Scrapes 1-3 unannotated (parallel); per-site normalizes 4-6 each depend only on their own scrape ([after: 1]/[after: 2]/[after: 3]); diff joins at [after: 4, 5, 6]. A real fan-out/fan-in DAG.</div>
+          <div class="a-ev failrow"><span class="tag to">old</span>Strictly sequential list with no dependency information. Also bundles all three normalizations into one 'For each scraped pricing page' subtask (line 4), hiding the fan-out a LangGraph consumer would want as separate nodes.</div>
+        </div>
+        <div class="assert">
+          <div class="a-head"><span class="a-name">snapshot-path-named</span><span class="mark np">new ✓</span><span class="mark op">old ✓</span></div>
+          <div class="a-ev"><span class="tag tn">new</span>Line 7 names ./data/pricing/2026-05.json.</div>
+          <div class="a-ev"><span class="tag to">old</span>Lines 5-6 name ./data/pricing/2026-05.json.</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ================= BEFORE / AFTER ================= -->
+<section id="before-after">
+  <div class="wrap">
+    <div class="sec-eyebrow">04 · Before / After</div>
+    <h2>The diff that bought 26 points.</h2>
+    <p class="lede">
+      Four excerpts from the skill file itself, old vs new (lightly redacted: internal agent
+      codenames and private paths replaced with generic terms). Skills are just instructions;
+      every benchmark point above traces to one of these paragraphs.
+    </p>
+
+    <div class="ba-grid">
+
+      <div class="ba-card">
+        <div class="ba-title">1 · Who is the executor?</div>
+        <div class="ba-why">
+          The old skill knew exactly one consumer: one internal mission orchestrator&rsquo;s dispatch
+          agents. The rebuild made &ldquo;atomic&rdquo; <strong>relative to the executor</strong>.
+          This single table is why eval 3 went from a flat sequential list to a real fan-out/fan-in DAG.
+        </div>
+        <div class="ba-cols">
+          <div class="ba-col before">
+            <div class="cl">Before</div>
+            <blockquote>"…atomic, dispatchable subtasks suitable for [internal orchestrator] / [worker-agent] execution … each runnable by a single agent turn."
+
+<span class="gap">(One notion of atomic, hard-coded to one system.)</span></blockquote>
+          </div>
+          <div class="ba-col after">
+            <div class="cl">After</div>
+            <blockquote>"What 'atomic' means depends on who runs the subtask:
+
+| Executor            | Atomic unit              |
+| Agent turn (default)| one search / write / run |
+| Workflow / DAG node | one node's worth         |
+| Headless cron run   | one command sequence     |
+| Human checklist     | one uninterrupted action |"</blockquote>
+          </div>
+        </div>
+      </div>
+
+      <div class="ba-card">
+        <div class="ba-title">2 · The JSON promise</div>
+        <div class="ba-why">
+          The killer detail of the whole benchmark. The old skill <strong>promised</strong> JSON output in its
+          description and then never defined a single field, so the model improvised a shape that
+          breaks any programmatic consumer. Four of six failures in eval 1 trace to this one
+          missing paragraph.
+        </div>
+        <div class="ba-cols">
+          <div class="ba-col before">
+            <div class="cl">Before · the entire JSON spec</div>
+            <blockquote>"Output is a numbered JSON or Markdown list — one atomic action per line."
+
+<span class="gap">(That's it. No fields, no example, no rules.)</span></blockquote>
+          </div>
+          <div class="ba-col after">
+            <div class="cl">After</div>
+            <blockquote>"Emit exactly one fenced json block, nothing else:
+{ "goal": …, "count": 5, "subtasks": [ { "id", "action", "artifacts", "halt_condition", "depends_on", "verify" } ] }
+
+Field rules: count must equal subtasks.length. depends_on is always present ([] = may start immediately). halt_condition is the literal token emitted on short-circuit, or null. verify is required."</blockquote>
+          </div>
+        </div>
+      </div>
+
+      <div class="ba-card">
+        <div class="ba-title">3 · The verification litmus test</div>
+        <div class="ba-why">
+          The old skill defined &ldquo;atomic&rdquo; by feel. The rebuild gives the model a <strong>checkable
+          criterion</strong> it runs silently on every candidate subtask, and that surfaces as the required
+          <code class="inl">verify</code> field in JSON mode.
+        </div>
+        <div class="ba-cols">
+          <div class="ba-col before">
+            <div class="cl">Before</div>
+            <blockquote><span class="gap">(No verification concept anywhere in the file.)</span></blockquote>
+          </div>
+          <div class="ba-col after">
+            <div class="cl">After</div>
+            <blockquote>"For each candidate subtask, ask: can you state in one sentence how an observer would verify it succeeded? (A concrete observable outcome — a file exists, a command exited 0, a value was captured — not a restatement of the action.) If you cannot articulate verification, the subtask is still compound: decompose further."</blockquote>
+          </div>
+        </div>
+      </div>
+
+      <div class="ba-card">
+        <div class="ba-title">4 · Known consumers (do not break)</div>
+        <div class="ba-why">
+          Step 1 of the loop (callsite research) found the skill&rsquo;s documented sponsor was wrong;
+          the real consumer was a nightly cron worker parsing the output headlessly. The rebuild
+          writes that contract <strong>into the skill itself</strong>, so no future rewrite can drift it silently.
+        </div>
+        <div class="ba-cols">
+          <div class="ba-col before">
+            <div class="cl">Before</div>
+            <blockquote>"Why this is a skill: pattern recurred in 5 distinct sessions … every time the orchestrator preps a goal for a dispatch agent."
+
+<span class="gap">(Justifies the skill's existence; documents no contract.)</span></blockquote>
+          </div>
+          <div class="ba-col after">
+            <div class="cl">After</div>
+            <blockquote>"Known consumers (do not break): the nightly worker's decompose step invokes this skill headlessly and parses the default markdown contract: a single 'Atomic subtasks (N):' line followed by numbered imperative lines. Any change to the default output shape must keep that contract intact."</blockquote>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ================= TRY THIS YOURSELF ================= -->
+<section id="try">
+  <div class="wrap">
+    <div class="sec-eyebrow">05 · Try This Yourself</div>
+    <h2>The pattern is reusable. The phrasing matters.</h2>
+    <p class="lede">
+      You don&rsquo;t need custom tooling for this; you need to ask for the loop instead of the rewrite.
+      These phrasings reliably steer Claude Code from &ldquo;edit the file&rdquo; into &ldquo;run the methodology&rdquo;:
+    </p>
+    <div class="trigger-chips">
+      <span class="tchip">"tear it down and build it back up"</span>
+      <span class="tchip">"benchmark it against the old version"</span>
+      <span class="tchip">"with evals"</span>
+      <span class="tchip">"snapshot the old one first"</span>
+      <span class="tchip">"show me the evidence"</span>
+    </div>
+
+    <div class="shape">research callsites &rarr; <b>human decides</b> &rarr; snapshot &rarr; rewrite &rarr; eval &times;2 (new vs old) &rarr; grade w/ evidence &rarr; benchmark &rarr; <b>human reviews</b> &rarr; <i>iterate</i></div>
+    <p class="lede" style="font-size:14.5px">
+      Human at the edges, machine in the middle: you make the design decisions before any code,
+      and you audit the grader at the end. Everything between is mechanical, reproducible, and
+      cheap to re-run.
+    </p>
+
+    <div class="tpl-list">
+      <div class="tpl">
+        <div class="th"><span class="tn2"><span class="n">01</span>The full loop</span><button class="copy-btn" onclick="copyTpl(this)">copy</button></div>
+        <pre>Review, tear down, and rebuild my &lt;skill-name&gt; skill. Snapshot the old version first, then benchmark the rebuild against that snapshot on realistic evals and show me the evidence for every grade.</pre>
+      </div>
+      <div class="tpl">
+        <div class="th"><span class="tn2"><span class="n">02</span>Callsite research before any edit</span><button class="copy-btn" onclick="copyTpl(this)">copy</button></div>
+        <pre>Before rewriting anything: find every place that actually consumes this skill's output (grep the whole config tree, crons, hooks, and other skills) and tell me exactly what output contract each consumer depends on.</pre>
+      </div>
+      <div class="tpl">
+        <div class="th"><span class="tn2"><span class="n">03</span>Decisions up front, not surprises after</span><button class="copy-btn" onclick="copyTpl(this)">copy</button></div>
+        <pre>Surface every design decision as a multiple-choice question BEFORE writing any code. I want to decide the tradeoffs; you implement them.</pre>
+      </div>
+      <div class="tpl">
+        <div class="th"><span class="tn2"><span class="n">04</span>A/B evals against the snapshot</span><button class="copy-btn" onclick="copyTpl(this)">copy</button></div>
+        <pre>Write 4 realistic eval prompts with explicit pass/fail assertions. Run each prompt in two fresh subagents (one with the new version loaded, one with the old snapshot) so the only variable is the skill text.</pre>
+      </div>
+      <div class="tpl">
+        <div class="th"><span class="tn2"><span class="n">05</span>Evidence-graded benchmark + human gate</span><button class="copy-btn" onclick="copyTpl(this)">copy</button></div>
+        <pre>Grade every run assertion-by-assertion with a quoted evidence line per verdict. Roll the grades into one benchmark table (pass rate, time, tokens, old vs new), then build me a self-contained review page so I can audit the grader and export feedback for iteration 2.</pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <div><strong>Built with Claude Code&rsquo;s skill-creator methodology.</strong> The skill is the product; the workspace is the proof; the loop is what makes the next rewrite cheaper and safer than this one was.</div>
+    <div>All file paths, hostnames, and URLs in the prompts, outputs, and evidence on this page are illustrative placeholders, sanitized from the original eval workspace without changing structure or verdicts.</div>
+  </div>
+</footer>
+
+<script>
+  // tabs
+  var btns = document.querySelectorAll('.tab-btn');
+  var panels = document.querySelectorAll('.tab-panel');
+  btns.forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      btns.forEach(function (b) { b.classList.remove('active'); });
+      panels.forEach(function (p) { p.classList.remove('active'); });
+      btn.classList.add('active');
+      document.getElementById(btn.dataset.tab).classList.add('active');
+    });
+  });
+  // copy buttons
+  function copyTpl(btn) {
+    var pre = btn.closest('.tpl').querySelector('pre');
+    var text = pre.textContent.trim();
+    function done() {
+      btn.textContent = 'copied ✓';
+      setTimeout(function () { btn.textContent = 'copy'; }, 1500);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done);
+    } else {
+      var ta = document.createElement('textarea');
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); done(); } catch (e) {}
+      document.body.removeChild(ta);
+    }
+  }
+</script>
+
+</body>
+</html>
