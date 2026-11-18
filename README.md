@@ -1,26 +1,59 @@
 # Tear It Down and Rebuild It
 
-A public showcase of what happens when you ask Claude Code to **"review, tear down, and rebuild"** a skill instead of "improve it." The phrase triggered Claude Code's skill-creator methodology, which ran a full engineering loop on a goal-decomposition skill (`decompose-goal`): callsite research, human design decisions up front, a frozen snapshot of the old version, a rewrite, four A/B evals in fresh subagents, assertion-based grading with written evidence, an aggregate benchmark, and a human review gate at the end.
+![Engineering Loop, compare an AI skill against evidence before accepting a rebuild](docs/portfolio-hero.png)
 
-## Headline numbers
+A prompt can sound better and still produce the wrong output. This case study follows the rebuild of a goal-decomposition skill from an open-ended improvement request to a comparison with explicit assertions, recorded evidence, and a human acceptance gate.
+
+The most useful finding was small: the old skill promised JSON but never specified its schema. In the recorded JSON-mode case, it passed 2 of 6 assertions. The rebuilt version passed all 6. The showcase lets you inspect the outputs and judgments behind that result.
+
+**[Explore the case study](https://m2ai-portfolio.github.io/engineering-loop-showcase/)**
+
+## What the recorded experiment found
 
 | Metric | Old skill | Rebuilt skill |
-|--------|-----------|---------------|
-| Pass rate (mean across evals) | 74.2% ± 28.6% | **100% ± 0%** |
-| Assertions passed | 17 / 23 | **23 / 23** |
-| Wall-clock per run | 47.5s | 47.4s |
-| Tokens per run | 76,645 | 77,553 (+1.2%) |
+|---|---:|---:|
+| Mean assertion pass rate across four cases | 74.2% ± 28.6% | 100% ± 0% |
+| Total assertions passed | 17 / 23 | 23 / 23 |
+| Mean wall-clock time per run | 47.5 seconds | 47.4 seconds |
+| Mean tokens per run | 76,645 | 77,553 |
 
-The killer detail: in the JSON-mode eval the old skill scored **2/6** vs the rebuild's **6/6**. The old skill promised JSON output in its description but never defined a schema, so the model invented an ad-hoc shape that breaks any programmatic consumer. Four of six failures traced to one missing paragraph.
+These are results from the stored case study: four prompts, two skill versions, eight runs. The mean pass rate is an average of per-case rates, which differs from dividing total passed assertions by 23. This small evaluation does not establish a general success rate or predict production performance.
 
-## What's here
+## The reusable workflow
 
-- `index.html` — a self-contained, zero-dependency showcase page: the loop, the benchmark, side-by-side eval evidence (all four evals, old vs new outputs with per-assertion grades), before/after skill excerpts, and five copy-paste prompt templates to run the same pattern yourself.
+1. Research how the skill is used and decide what the output contract must preserve.
+2. Make consequential design choices with a human before changing the skill.
+3. Freeze the old version so the comparison has a stable baseline.
+4. Rebuild, then run both versions on the same four evaluation cases in fresh agent contexts.
+5. Grade against explicit assertions and attach evidence to each verdict.
+6. Compare outcomes, timing, and token use, then return the decision to a human reviewer.
 
-The site is published via GitHub Pages; open `index.html` in any browser to view it locally.
+The page includes side-by-side outputs, graded evidence, before-and-after excerpts, and five copyable prompt templates for adapting the pattern.
 
-## Note on sanitization
+## Run the showcase locally
 
-All file paths, hostnames, and URLs in the prompts, outputs, and grading evidence are illustrative placeholders. Structure, scores, and grader verdicts are otherwise verbatim from the original eval workspace.
+Requires Git and a modern browser. No Node.js installation, backend, or API key is needed to view the evidence.
 
-Built with Claude Code's skill-creator methodology.
+```bash
+git clone https://github.com/m2ai-portfolio/engineering-loop-showcase.git
+cd engineering-loop-showcase
+```
+
+Open [index.html](index.html) in a browser. The page is self-contained.
+
+## A five-minute review
+
+1. Read the engineering-loop sequence to understand what changed and who approved it.
+2. Inspect the JSON-mode evaluation, comparing the old output, rebuilt output, and each assertion.
+3. Check the aggregate table against the individual cases.
+4. Choose a prompt template and adapt its task, constraints, and acceptance criteria to your own skill.
+
+Re-running the underlying agent experiment requires your own Claude Code environment and model access. The repository presents the captured evidence; opening the page does not launch an evaluation.
+
+## Evidence and editing notes
+
+All displayed paths, hostnames, and URLs in the evaluation examples are illustrative replacements. The original README describes the structure, scores, and grader verdicts as preserved from the evaluation workspace. Treat those as historical experiment records, not a new independent benchmark run.
+
+To update the showcase, edit `index.html`, reopen it, and check navigation, copy buttons, evaluation panels, and narrow-screen layout. Keep the reported totals consistent with the individual assertions.
+
+Built by Matthew Snow / [M2AI](https://memyselfplusai.com), using Claude Code's skill-creator methodology. No license file is included in this snapshot.
